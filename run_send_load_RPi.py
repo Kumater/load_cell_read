@@ -3,12 +3,14 @@ import time
 import asyncio
 import threading
 import signal
+import smbus2  # Added for I2C communication
 
 from OptiTrack.NatNetClient import NatNetClient
 import OptiTrack.MoCapData as MoCapData 
 
 from mavsdk import System
 from mavsdk.mocap import (AngleBody, PositionBody, VisionPositionEstimate, Covariance)
+from mavsdk.telemetry import DebugVect  # Added for logging force
 
 import HelperFunctions as Helper
 
@@ -17,8 +19,18 @@ serverAdress = "192.168.0.100"
 clientAdress = "0.0.0.0"
 assetID = 21
 px4Address = "serial:///dev/ttyAMA0:500000"
+
+# PGA302 I2C Addresses[cite: 2]
+PAGE_TEST_REG = 0x40
+REG_PADC_DATA_LSB = 0x10
+REG_PADC_DATA_MSB = 0x11
+
+# Calibrated Constants[cite: 2]
+OFFSET = 93.5
+SCALE_FACTOR = 238.66 
 ##### Configuration #####
 
+bus = smbus2.SMBus(1)  # Initialize I2C bus[cite: 2]
 loop: asyncio.AbstractEventLoop | None = None
 natnet_client: NatNetClient | None = None
 natnet_thread: threading.Thread | None = None
@@ -26,6 +38,21 @@ shutdown_event = threading.Event()
 
 ##### Latest-only pose queue #####
 pose_queue: asyncio.Queue | None = None
+
+##### Load Cell Helper #####
+def get_weight_kg():
+    """Reads from PGA302 and returns weight in kg[cite: 2]."""
+    try:
+        lsb = bus.read_byte_data(PAGE_TEST_REG, REG_PADC_DATA_LSB)
+        msb = bus.read_byte_data(PAGE_TEST_REG, REG_PADC_DATA_MSB)
+        combined = (msb << 8) | lsb
+        if combined > 32767:
+            combined -= 65536
+        
+        weight_kg = (combined - OFFSET) / SCALE_FACTOR
+        return float(weight_kg)
+    except Exception as e:
+        return 0.0
 
 ##### Callback #####
 def receive_rigid_body_frame(rb_id, position, orientation):
@@ -44,13 +71,11 @@ def receive_rigid_body_frame(rb_id, position, orientation):
         )
         curr_Ang = AngleBody(eulAng[0], eulAng[1], eulAng[2])
 
-        # Prepare tuple
         data = (curr_Pos, curr_Ang, time_usec)
 
-        # Thread-safe enqueue: drop old item first
         def put_latest():
             try:
-                pose_queue.get_nowait()   # drop old
+                pose_queue.get_nowait()   
             except asyncio.QueueEmpty:
                 pass
             try:
@@ -80,7 +105,7 @@ def natnet_worker():
         client.run('d')
         time.sleep(1)
         if not client.connected():
-            print("[OptiTrack] ERROR: Connection failed. Check Motive streaming settings.")
+            print("[OptiTrack] ERROR: Connection failed.")
             return
         Helper.print_configuration(client)
         print("[OptiTrack] Streaming active.")
@@ -97,14 +122,12 @@ def natnet_worker():
         print("[OptiTrack] Thread stopped.")
 
 
-
-
 async def configDroneAndRun():
     global loop, pose_queue
     loop = asyncio.get_running_loop()
     pose_queue = asyncio.Queue(maxsize=1)
 
-    # 1. CONNECT FIRST
+    # 1. CONNECT FIRST (Maintains your original structure)
     drone = System()
     print("Connecting to PX4...")
     await drone.connect(system_address=px4Address)
@@ -119,30 +142,36 @@ async def configDroneAndRun():
     natnet_thread = threading.Thread(target=natnet_worker, daemon=True)
     natnet_thread.start()
     
-    # ... rest of the code
-
-
     last_print = time.time()
     try:
         while True:
             curr_Pos, curr_Ang, time_usec = await pose_queue.get()
+            
+            # Read Load Cell[cite: 2]
+            force_kg = get_weight_kg()
+
+            # Send Vision Position to PX4
             vis_pos_est = VisionPositionEstimate(
                 time_usec, curr_Pos, curr_Ang, Covariance([float('nan')])
             )
             await drone.mocap.set_vision_position_estimate(vis_pos_est)
 
+            # Send Force to Autopilot for logging[cite: 2]
+            log_data = DebugVect("FORCE", time_usec, force_kg, 0.0, 0.0)
+            await drone.telemetry.send_debug_vect(log_data)
+
             now = time.time()
             if now - last_print >= 1:
                 print(
                     f"x={curr_Pos.x_m:.2f} y={curr_Pos.y_m:.2f} z={curr_Pos.z_m:.2f} "
-                    f"roll={curr_Ang.roll_rad:.2f} pitch={curr_Ang.pitch_rad:.2f} yaw={curr_Ang.yaw_rad:.2f}"
+                    f"Force={force_kg:.3f} kg"
                 )
                 last_print = now
     except asyncio.CancelledError:
         pass
 
 
-##### External loop version #####
+##### External loop version (Maintained structure[cite: 1]) #####
 async def runExternal(drone, ext_loop):
     global loop, pose_queue
     loop = ext_loop
@@ -165,16 +194,23 @@ async def runExternal(drone, ext_loop):
     try:
         while True:
             curr_Pos, curr_Ang, time_usec = await pose_queue.get()
+            
+            # Read and Send Load Cell data[cite: 2]
+            force_kg = get_weight_kg()
+            
             vis_pos_est = VisionPositionEstimate(
                 time_usec, curr_Pos, curr_Ang, Covariance([float('nan')])
             )
             await drone.mocap.set_vision_position_estimate(vis_pos_est)
 
+            log_data = DebugVect("FORCE", time_usec, force_kg, 0.0, 0.0)
+            await drone.telemetry.send_debug_vect(log_data)
+
             now = time.time()
             if now - last_print >= 1:
                 print(
                     f"x={curr_Pos.x_m:.2f} y={curr_Pos.y_m:.2f} z={curr_Pos.z_m:.2f} "
-                    f"roll={curr_Ang.roll_rad:.2f} pitch={curr_Ang.pitch_rad:.2f} yaw={curr_Ang.yaw_rad:.2f}"
+                    f"Force={force_kg:.3f} kg"
                 )
                 last_print = now
     except asyncio.CancelledError:
@@ -192,7 +228,7 @@ def shutdown():
 
 ##### Entry #####
 if __name__ == "__main__":
-    print("RPi4_OptiTrack Started")
+    print("RPi_OptiTrack_LoadCell Started")
     try:
         asyncio.run(configDroneAndRun())
     except KeyboardInterrupt:
