@@ -10,7 +10,8 @@ import OptiTrack.MoCapData as MoCapData
 
 from mavsdk import System
 from mavsdk.mocap import (AngleBody, PositionBody, VisionPositionEstimate, Covariance)
-from mavsdk.telemetry import DebugVect  # Added for logging force
+#from mavsdk.telemetry import DebugVect  # Added for logging force
+from mavsdk.telemetry import (FlightMode, StatusText)
 
 import HelperFunctions as Helper
 
@@ -204,7 +205,10 @@ async def runExternal(drone, ext_loop):
             await drone.mocap.set_vision_position_estimate(vis_pos_est)
 
             log_data = DebugVect("FORCE", time_usec, force_kg, 0.0, 0.0)
-            await drone.telemetry.send_debug_vect(log_data)
+	try:
+		await drone.telemetry.set_debug_float_array([float(force_kg)])
+	   except Exception as e:
+		print(f"Teelemtry Error: {e}")
 
             now = time.time()
             if now - last_print >= 1:
