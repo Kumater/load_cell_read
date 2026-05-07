@@ -205,10 +205,10 @@ async def runExternal(drone, ext_loop):
             await drone.mocap.set_vision_position_estimate(vis_pos_est)
 
             log_data = DebugVect("FORCE", time_usec, force_kg, 0.0, 0.0)
-	try:
-		await drone.telemetry.set_debug_float_array([float(force_kg)])
-	   except Exception as e:
-		print(f"Teelemtry Error: {e}")
+            try:
+                await drone.telemetry.set_debug_float_array([float(force_kg)])
+            except Exception as e:
+                print(f"Telemetry Error: {e}")
 
             now = time.time()
             if now - last_print >= 1:
