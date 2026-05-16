@@ -1,16 +1,15 @@
-import spidev
+import RPi.GPIO as GPIO
 import time
 
-spi = spidev.SpiDev()
-spi.open(0, 1)  # <-- changed to CE1
-spi.max_speed_hz = 100000
-spi.mode = 0
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(11, GPIO.OUT)  # GPIO11 = SCLK = Pin 23
 
-print("Trying spidev0.1 ...")
+print("Toggling GPIO11 - probe Pin 23 now")
 try:
     while True:
-        raw = spi.xfer2([0x00] * 7)
-        print([hex(x) for x in raw])
-        time.sleep(0.05)
+        GPIO.output(11, GPIO.HIGH)
+        time.sleep(0.001)
+        GPIO.output(11, GPIO.LOW)
+        time.sleep(0.001)
 except KeyboardInterrupt:
-    spi.close()
+    GPIO.cleanup()
