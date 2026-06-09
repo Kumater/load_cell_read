@@ -1,5 +1,6 @@
 import smbus2
 import time
+import math
 
 AS5600_ADDR    = 0x36
 PAGE_TEST_REG  = 0x40
@@ -63,6 +64,14 @@ def raw_to_newtons(raw):
     kg = (raw - OFFSET) / SCALE_KG
     return kg * GRAVITY
 
+def resolve_force(T, theta_deg, phi_deg):
+    theta = math.radians(theta_deg)
+    phi   = math.radians(phi_deg)
+    Fx =  T * math.sin(theta)
+    Fy =  T * math.cos(theta) * math.sin(phi)
+    Fz =  T * math.cos(theta) * math.cos(phi)
+    return Fx, Fy, Fz
+
 try:
     setup_pga302()
     while True:
@@ -71,12 +80,18 @@ try:
 
         pitch = to_signed(read_angle(bus_pitch), PITCH_NEUTRAL) if md1 else None
         roll  = to_signed(read_angle(bus_roll),  ROLL_NEUTRAL)  if md2 else None
-        load  = raw_to_newtons(read_padc())
+        T     = raw_to_newtons(read_padc())
 
         pitch_str = f"{pitch:+.2f}°" if pitch is not None else "no magnet"
         roll_str  = f"{roll:+.2f}°"  if roll  is not None else "no magnet"
 
-        print(f"Pitch: {pitch_str}   Roll: {roll_str}   Load: {load:.3f} N")
+        if pitch is not None and roll is not None:
+            Fx, Fy, Fz = resolve_force(T, pitch, roll)
+            print(f"Pitch: {pitch_str}   Roll: {roll_str}   T: {T:.3f} N   "
+                  f"Fx: {Fx:.3f} N   Fy: {Fy:.3f} N   Fz: {Fz:.3f} N")
+        else:
+            print(f"Pitch: {pitch_str}   Roll: {roll_str}   T: {T:.3f} N")
+
         time.sleep(0.05)
 
 except KeyboardInterrupt:
