@@ -17,6 +17,10 @@ GAIN_200          = 0x07
 PITCH_NEUTRAL = 311.84
 ROLL_NEUTRAL  = 124.98
 
+OFFSET    = 93.5
+SCALE_KG  = 238.66
+GRAVITY   = 9.81
+
 bus_pitch = smbus2.SMBus(3)  # inner gimbal (θ)
 bus_roll  = smbus2.SMBus(1)  # outer gimbal (φ)
 bus_load  = smbus2.SMBus(4)
@@ -55,6 +59,10 @@ def read_padc():
         combined -= 65536
     return combined
 
+def raw_to_newtons(raw):
+    kg = (raw - OFFSET) / SCALE_KG
+    return kg * GRAVITY
+
 try:
     setup_pga302()
     while True:
@@ -63,12 +71,12 @@ try:
 
         pitch = to_signed(read_angle(bus_pitch), PITCH_NEUTRAL) if md1 else None
         roll  = to_signed(read_angle(bus_roll),  ROLL_NEUTRAL)  if md2 else None
-        load  = read_padc()
+        load  = raw_to_newtons(read_padc())
 
         pitch_str = f"{pitch:+.2f}°" if pitch is not None else "no magnet"
         roll_str  = f"{roll:+.2f}°"  if roll  is not None else "no magnet"
 
-        print(f"Pitch: {pitch_str}   Roll: {roll_str}   Load: {load}")
+        print(f"Pitch: {pitch_str}   Roll: {roll_str}   Load: {load:.3f} N")
         time.sleep(0.05)
 
 except KeyboardInterrupt:
